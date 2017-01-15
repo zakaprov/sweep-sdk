@@ -1,4 +1,5 @@
 include config.mk
+CC=arm-linux-gnueabi-gcc
 
 all: libsweep.so
 
