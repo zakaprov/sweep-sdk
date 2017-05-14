@@ -1,7 +1,8 @@
 import ctypes
+import ctypes.util
 import collections
 
-libsweep = ctypes.cdll.LoadLibrary('libsweep.so')
+libsweep = ctypes.cdll.LoadLibrary(ctypes.util.find_library('sweep'))
 
 libsweep.sweep_get_version.restype = ctypes.c_int32
 libsweep.sweep_get_version.argtypes = None
@@ -16,7 +17,7 @@ libsweep.sweep_error_destruct.restype = None
 libsweep.sweep_error_destruct.argtypes = [ctypes.c_void_p]
 
 libsweep.sweep_device_construct_simple.restype = ctypes.c_void_p
-libsweep.sweep_device_construct_simple.argtypes = [ctypes.c_void_p]
+libsweep.sweep_device_construct_simple.argtypes = [ctypes.c_char_p, ctypes.c_void_p]
 
 libsweep.sweep_device_construct.restype = ctypes.c_void_p
 libsweep.sweep_device_construct.argtypes = [ctypes.c_char_p, ctypes.c_int32, ctypes.c_void_p]
@@ -48,11 +49,20 @@ libsweep.sweep_scan_get_distance.argtypes = [ctypes.c_void_p, ctypes.c_int32]
 libsweep.sweep_scan_get_signal_strength.restype = ctypes.c_int32
 libsweep.sweep_scan_get_signal_strength.argtypes = [ctypes.c_void_p, ctypes.c_int32]
 
+libsweep.sweep_device_get_motor_ready.restype = ctypes.c_bool
+libsweep.sweep_device_get_motor_ready.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+
 libsweep.sweep_device_get_motor_speed.restype = ctypes.c_int32
 libsweep.sweep_device_get_motor_speed.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
 
 libsweep.sweep_device_set_motor_speed.restype = None
 libsweep.sweep_device_set_motor_speed.argtypes = [ctypes.c_void_p, ctypes.c_int32, ctypes.c_void_p]
+
+libsweep.sweep_device_get_sample_rate.restype = ctypes.c_int32
+libsweep.sweep_device_get_sample_rate.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+
+libsweep.sweep_device_set_sample_rate.restype = None
+libsweep.sweep_device_set_sample_rate.argtypes = [ctypes.c_void_p, ctypes.c_int32, ctypes.c_void_p]
 
 libsweep.sweep_device_reset.restype = None
 libsweep.sweep_device_reset.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
@@ -62,7 +72,7 @@ def _error_to_exception(error):
     assert error
     what = libsweep.sweep_error_message(error)
     libsweep.sweep_error_destruct(error)
-    return RuntimeError(what)
+    return RuntimeError(what.decode('ascii'))
 
 
 class Scan(collections.namedtuple('Scan', 'samples')):
@@ -74,7 +84,7 @@ class Sample(collections.namedtuple('Sample', 'angle distance signal_strength'))
 
 
 class Sweep:
-    def __init__(_, port = None, bitrate = None):
+    def __init__(_, port, bitrate = None):
         _.scoped = False
         _.args = [port, bitrate]
 
@@ -84,18 +94,19 @@ class Sweep:
 
         assert libsweep.sweep_is_abi_compatible(), 'Your installed libsweep is not ABI compatible with these bindings'
 
-        error = ctypes.c_void_p();
+        error = ctypes.c_void_p()
 
-        simple = not any(_.args)
+        simple = not _.args[1]
         config = all(_.args)
 
-        assert simple or config, 'No arguments for auto-detection or port, bitrate, required'
+        assert simple or config, 'No arguments for bitrate, required'
 
         if simple:
-            device = libsweep.sweep_device_construct_simple(ctypes.byref(error))
+            port = ctypes.string_at(_.args[0].encode('ascii'))
+            device = libsweep.sweep_device_construct_simple(port, ctypes.byref(error))
 
         if config:
-            port = ctypes.string_at(_.args[0])
+            port = ctypes.string_at(_.args[0].encode('ascii'))
             bitrate = ctypes.c_int32(_.args[1])
             device = libsweep.sweep_device_construct(port, bitrate, ctypes.byref(error))
 
@@ -125,13 +136,24 @@ class Sweep:
             raise _error_to_exception(error)
 
     def stop_scanning(_):
-        _._assert_scoped();
+        _._assert_scoped()
 
-        error = ctypes.c_void_p();
+        error = ctypes.c_void_p()
         libsweep.sweep_device_stop_scanning(_.device, ctypes.byref(error))
 
         if error:
             raise _error_to_exception(error)
+
+    def get_motor_ready(_):
+        _._assert_scoped()
+
+        error = ctypes.c_void_p()
+        is_ready = libsweep.sweep_device_get_motor_ready(_.device, ctypes.byref(error))
+
+        if error:
+            raise _error_to_exception(error)
+
+        return is_ready
 
     def get_motor_speed(_):
         _._assert_scoped()
@@ -149,6 +171,26 @@ class Sweep:
 
         error = ctypes.c_void_p()
         libsweep.sweep_device_set_motor_speed(_.device, speed, ctypes.byref(error))
+
+        if error:
+            raise _error_to_exception(error)
+
+    def get_sample_rate(_):
+        _._assert_scoped()
+
+        error = ctypes.c_void_p()
+        speed = libsweep.sweep_device_get_sample_rate(_.device, ctypes.byref(error))
+
+        if error:
+            raise _error_to_exception(error)
+
+        return speed
+
+    def set_sample_rate(_, speed):
+        _._assert_scoped()
+
+        error = ctypes.c_void_p()
+        libsweep.sweep_device_set_sample_rate(_.device, speed, ctypes.byref(error))
 
         if error:
             raise _error_to_exception(error)
@@ -177,25 +219,10 @@ class Sweep:
 
 
     def reset(_):
-        _._assert_scoped();
+        _._assert_scoped()
 
-        error = ctypes.c_void_p();
+        error = ctypes.c_void_p()
         libsweep.sweep_device_reset(_.device, ctypes.byref(error))
 
         if error:
             raise _error_to_exception(error)
-
-
-if __name__ == '__main__':
-    with Sweep() as sweep:
-        sweep.start_scanning()
-
-        speed = sweep.get_motor_speed()
-        sweep.set_motor_speed(speed + 1)
-
-        # get_scans is coroutine-based generator lazily returning scans ad infinitum
-        for n, scan in enumerate(sweep.get_scans()):
-            print('{}\n'.format(scan))
-
-            if n == 3:
-                break

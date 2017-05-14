@@ -1,9 +1,8 @@
 #define _POSIX_C_SOURCE 200809L
 
-#include "serial.h"
+#include "serial.hpp"
 
 #include <errno.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,38 +13,13 @@
 #include <termios.h>
 #include <unistd.h>
 
-typedef struct sweep_serial_error {
-  const char* what; // always literal, do not free
-} sweep_serial_error;
+namespace sweep {
+namespace serial {
 
-typedef struct sweep_serial_device { int32_t fd; } sweep_serial_device;
+typedef struct device { int32_t fd; } device;
 
-// Constructor hidden from users
-static sweep_serial_error_s sweep_serial_error_construct(const char* what) {
-  SWEEP_ASSERT(what);
-
-  sweep_serial_error_s out = malloc(sizeof(sweep_serial_error));
-  SWEEP_ASSERT(out && "out of memory during error reporting");
-
-  *out = (sweep_serial_error){.what = what};
-  return out;
-}
-
-const char* sweep_serial_error_message(sweep_serial_error_s error) {
-  SWEEP_ASSERT(error);
-
-  return error->what;
-}
-
-void sweep_serial_error_destruct(sweep_serial_error_s error) {
-  SWEEP_ASSERT(error);
-
-  free(error);
-}
-
-static speed_t sweep_serial_detail_get_baud(int32_t bitrate, sweep_serial_error_s* error) {
+static speed_t get_baud(int32_t bitrate) {
   SWEEP_ASSERT(bitrate > 0);
-  SWEEP_ASSERT(error);
 
   speed_t baud;
 
@@ -236,23 +210,22 @@ static speed_t sweep_serial_detail_get_baud(int32_t bitrate, sweep_serial_error_
     break;
 #endif
   default:
-    *error = sweep_serial_error_construct("baud rate could not be determined");
+    throw error{"baud rate could not be determined"};
     baud = -1;
   }
 
   return baud;
 }
 
-static bool sweep_serial_detail_wait_readable(sweep_serial_device_s serial, sweep_serial_error_s* error) {
+static bool wait_readable(device_s serial) {
   SWEEP_ASSERT(serial);
-  SWEEP_ASSERT(error);
 
   // Setup a select call to block for serial data
   fd_set readfds;
   FD_ZERO(&readfds);
   FD_SET(serial->fd, &readfds);
 
-  int32_t ret = select(serial->fd + 1, &readfds, NULL, NULL, NULL);
+  int32_t ret = select(serial->fd + 1, &readfds, nullptr, nullptr, nullptr);
 
   if (ret == -1) {
     // Select was interrupted
@@ -261,8 +234,8 @@ static bool sweep_serial_detail_wait_readable(sweep_serial_device_s serial, swee
     }
 
     // Otherwise there was some error
-    *error = sweep_serial_error_construct("blocking on data to read failed");
-    return false;
+    throw error{"blocking on data to read failed"};
+
   } else if (ret) {
     // Data Available
     return true;
@@ -273,29 +246,22 @@ static bool sweep_serial_detail_wait_readable(sweep_serial_device_s serial, swee
   return false;
 }
 
-sweep_serial_device_s sweep_serial_device_construct(const char* port, int32_t bitrate, sweep_serial_error_s* error) {
+device_s device_construct(const char* port, int32_t bitrate) {
   SWEEP_ASSERT(port);
   SWEEP_ASSERT(bitrate > 0);
-  SWEEP_ASSERT(error);
 
   int32_t fd = open(port, O_RDWR | O_NOCTTY | O_NONBLOCK);
 
-  if (fd == -1) {
-    *error = sweep_serial_error_construct("opening serial port failed");
-    return NULL;
-  }
+  if (fd == -1)
+    throw error{"opening serial port failed"};
 
-  if (!isatty(fd)) {
-    *error = sweep_serial_error_construct("serial port is not a TTY");
-    return NULL;
-  }
+  if (!isatty(fd))
+    throw error{"serial port is not a TTY"};
 
   struct termios options;
 
-  if (tcgetattr(fd, &options) == -1) {
-    *error = sweep_serial_error_construct("querying terminal options failed");
-    return NULL;
-  }
+  if (tcgetattr(fd, &options) == -1)
+    throw error{"querying terminal options failed"};
 
   // Input Flags
   options.c_iflag &= ~(INLCR | IGNCR | ICRNL | IGNBRK);
@@ -316,92 +282,73 @@ sweep_serial_device_s sweep_serial_device_construct(const char* port, int32_t bi
   options.c_cflag &= ~(PARENB | CSTOPB | CSIZE);
 
   // setup baud rate
-  sweep_serial_error_s bauderror = NULL;
-  speed_t baud = sweep_serial_detail_get_baud(bitrate, &bauderror);
-
-  if (bauderror) {
-    *error = bauderror;
-    return NULL;
-  }
+  speed_t baud = get_baud(bitrate);
 
   cfsetispeed(&options, baud);
   cfsetospeed(&options, baud);
 
   // flush the port
-  if (tcflush(fd, TCIFLUSH) == -1) {
-    *error = sweep_serial_error_construct("flushing the serial port failed");
-    return NULL;
-  }
+  if (tcflush(fd, TCIFLUSH) == -1)
+    throw error{"flushing the serial port failed"};
 
   // set port attributes
   if (tcsetattr(fd, TCSANOW, &options) == -1) {
-    *error = sweep_serial_error_construct("setting terminal options failed");
-
-    if (close(fd) == -1) {
+    if (close(fd) == -1)
       SWEEP_ASSERT(false && "closing file descriptor during error handling failed");
-    }
 
-    return NULL;
+    throw error{"setting terminal options failed"};
   }
 
-  sweep_serial_device_s out = malloc(sizeof(sweep_serial_device));
-
-  if (out == NULL) {
-    *error = sweep_serial_error_construct("oom during serial device creation");
-    return NULL;
-  }
-
-  *out = (sweep_serial_device){.fd = fd};
-
+  auto out = new device{fd};
   return out;
 }
 
-void sweep_serial_device_destruct(sweep_serial_device_s serial) {
+void device_destruct(device_s serial) {
   SWEEP_ASSERT(serial);
 
-  free(serial);
+  try {
+    device_flush(serial);
+  } catch (...) {
+    // nothing we can do here
+  }
+
+  if (close(serial->fd) == -1)
+    SWEEP_ASSERT(false && "closing file descriptor during destruct failed");
+
+  delete serial;
 }
 
-void sweep_serial_device_read(sweep_serial_device_s serial, void* to, int32_t len, sweep_serial_error_s* error) {
+void device_read(device_s serial, void* to, int32_t len) {
   SWEEP_ASSERT(serial);
   SWEEP_ASSERT(to);
   SWEEP_ASSERT(len >= 0);
-  SWEEP_ASSERT(error);
 
   // the following implements reliable full read xor error
   int32_t bytes_read = 0;
 
-  sweep_serial_error_s waiterror = NULL;
-
   while (bytes_read < len) {
-    if (sweep_serial_detail_wait_readable(serial, &waiterror) && !waiterror) {
+    if (wait_readable(serial)) {
       int ret = read(serial->fd, (char*)to + bytes_read, len - bytes_read);
 
       if (ret == -1) {
         if (errno == EAGAIN || errno == EINTR) {
           continue;
         } else {
-          *error = sweep_serial_error_construct("reading from serial device failed");
-          return;
+          throw error{"reading from serial device failed"};
         }
       } else {
         bytes_read += ret;
       }
-
-    } else if (waiterror) {
-      *error = waiterror;
-      return;
     }
   }
 
   SWEEP_ASSERT(bytes_read == len && "reliable read failed to read requested size of bytes");
 }
 
-void sweep_serial_device_write(sweep_serial_device_s serial, const void* from, int32_t len, sweep_serial_error_s* error) {
+void device_write(device_s serial, const void* from, int32_t len) {
   SWEEP_ASSERT(serial);
   SWEEP_ASSERT(from);
   SWEEP_ASSERT(len >= 0);
-  SWEEP_ASSERT(error);
 
   // the following implements reliable full write xor error
   int32_t bytes_written = 0;
@@ -413,8 +360,7 @@ void sweep_serial_device_write(sweep_serial_device_s serial, const void* from, i
       if (errno == EAGAIN || errno == EINTR) {
         continue;
       } else {
-        *error = sweep_serial_error_construct("writing to serial device failed");
-        return;
+        throw error{"writing to serial device failed"};
       }
     } else {
       bytes_written += ret;
@@ -424,11 +370,12 @@ void sweep_serial_device_write(sweep_serial_device_s serial, const void* from, i
   SWEEP_ASSERT(bytes_written == len && "reliable write failed to write requested size of bytes");
 }
 
-void sweep_serial_device_flush(sweep_serial_device_s serial, sweep_serial_error_s* error) {
+void device_flush(device_s serial) {
   SWEEP_ASSERT(serial);
-  SWEEP_ASSERT(error);
 
-  if (tcflush(serial->fd, TCIFLUSH) == -1) {
-    *error = sweep_serial_error_construct("flushing the serial port failed");
-  }
+  if (tcflush(serial->fd, TCIFLUSH) == -1)
+    throw error{"flushing the serial port failed"};
 }
+
+} // ns serial
+} // ns sweep

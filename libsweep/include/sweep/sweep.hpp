@@ -17,7 +17,7 @@
 #include <stdexcept>
 #include <vector>
 
-#include "sweep.h"
+#include <sweep/sweep.h>
 
 namespace sweep {
 
@@ -42,17 +42,16 @@ struct scan {
 
 class sweep {
 public:
-  sweep();
+  sweep(const char* port);
   sweep(const char* port, std::int32_t bitrate);
-
   void start_scanning();
   void stop_scanning();
-
+  bool get_motor_ready();
   std::int32_t get_motor_speed();
   void set_motor_speed(std::int32_t speed);
-
+  std::int32_t get_sample_rate();
+  void set_sample_rate(std::int32_t speed);
   scan get_scan();
-
   void reset();
 
 private:
@@ -77,7 +76,8 @@ struct error_to_exception {
 };
 }
 
-sweep::sweep() : device{::sweep_device_construct_simple(detail::error_to_exception{}), &::sweep_device_destruct} {}
+sweep::sweep(const char* port)
+    : device{::sweep_device_construct_simple(port, detail::error_to_exception{}), &::sweep_device_destruct} {}
 
 sweep::sweep(const char* port, std::int32_t bitrate)
     : device{::sweep_device_construct(port, bitrate, detail::error_to_exception{}), &::sweep_device_destruct} {}
@@ -86,10 +86,18 @@ void sweep::start_scanning() { ::sweep_device_start_scanning(device.get(), detai
 
 void sweep::stop_scanning() { ::sweep_device_stop_scanning(device.get(), detail::error_to_exception{}); }
 
+bool sweep::get_motor_ready() { return ::sweep_device_get_motor_ready(device.get(), detail::error_to_exception{}); }
+
 std::int32_t sweep::get_motor_speed() { return ::sweep_device_get_motor_speed(device.get(), detail::error_to_exception{}); }
 
 void sweep::set_motor_speed(std::int32_t speed) {
   ::sweep_device_set_motor_speed(device.get(), speed, detail::error_to_exception{});
+}
+
+std::int32_t sweep::get_sample_rate() { return ::sweep_device_get_sample_rate(device.get(), detail::error_to_exception{}); }
+
+void sweep::set_sample_rate(std::int32_t rate) {
+  ::sweep_device_set_sample_rate(device.get(), rate, detail::error_to_exception{});
 }
 
 scan sweep::get_scan() {
@@ -111,7 +119,7 @@ scan sweep::get_scan() {
   }
 
   return result;
-};
+}
 
 void sweep::reset() { ::sweep_device_reset(device.get(), detail::error_to_exception{}); }
 
